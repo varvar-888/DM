@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Облако слов</title>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="guest-body">
+  <header class="guest-header">
+    <!-- Добавлен ID guestLogo для смены логотипа -->
+    <img id="guestLogo" src="/logo.png" alt="Логотип" class="logo-small">
+  </header>
+
+  <main class="guest-wrap">
+    <section class="guest-card">
+      <h1 class="guest-title">Ваше слово</h1>
+      <p class="guest-subtitle">Ответьте одним словом — оно появится в облаке</p>
+
+      <label class="field-label" for="codeInput">Код комнаты</label>
+      <input type="text" id="codeInput" class="input" inputmode="numeric" maxlength="6" placeholder="XXXXXX">
+
+      <label class="field-label" for="wordInput">Ваше слово</label>
+      <input type="text" id="wordInput" class="input" maxlength="40" placeholder="Одно слово">
+
+      <div id="quotaBar" class="quota-bar" hidden>
+        <span id="quotaText">0 / 0</span>
+        <div class="quota-track"><div id="quotaFill" class="quota-fill"></div></div>
+      </div>
+
+      <button id="sendBtn" class="btn" type="button">Отправить</button>
+      <p id="statusMsg" class="status" hidden></p>
+    </section>
+  </main>
+
+  <footer class="guest-footer"><p>2026 · Дворец Молодёжи</p></footer>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const params = new URLSearchParams(window.location.search);
+    const urlCode = (params.get('code') || '').trim();
+
+    const codeInput = document.getElementById('codeInput');
+    const wordInput = document.getElementById('wordInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const statusMsg = document.getElementById('statusMsg');
+    const quotaBar = document.getElementById('quotaBar');
+    const quotaText = document.getElementById('quotaText');
+    const quotaFill = document.getElementById('quotaFill');
+    const guestLogo = document.getElementById('guestLogo'); // Элемент логотипа
+
+    let currentCode = null;
+    let limit = 0;
+    let used = 0;
+
+    // === СИНХРОНИЗАЦИЯ ТЕМЫ ===
+    function applyTheme(themeName) {
+      document.body.classList.remove('theme-red', 'theme-blue', 'theme-gray');
+      if (themeName && themeName !== 'default') document.body.classList.add(themeName);
+    }
+
+    socket.on('themeUpdate', ({ code, theme }) => {
+      if (currentCode && code !== currentCode) return;
+      applyTheme(theme);
+    });
+
+    // === СИНХРОНИЗАЦИЯ ЛОГОТИПА ===
+    socket.on('logoUpdate', ({ code, logo }) => {
+      if (currentCode && code !== currentCode) return;
+      if (logo) guestLogo.src = logo;
+    });
+
+    // === ЛОГИКА ГОСТЯ ===
+    if (urlCode) {
+      codeInput.value = urlCode;
+      codeInput.readOnly = true;
+      wordInput.focus();
+    }
+
+    function setCode(code) {
+      if (!code || !/^\d{6}$/.test(code)) return;
+      currentCode = code;
+      socket.emit('requestQuota', { code });
+    }
+
+    if (urlCode && /^\d{6}$/.test(urlCode)) setCode(urlCode);
+
+    function send() {
+      const code = currentCode || codeInput.value.trim();
+      const word = wordInput.value.trim();
+      if (!/^\d{6}$/.test(code)) return showStatus('Введите код комнаты — 6 цифр', true);
+      if (!codeInput.readOnly) { codeInput.readOnly = true; setCode(code); }
+      if (!word) return showStatus('Введите слово', true);
+      socket.emit('submitWord', { code, word });
+    }
+
+    function showStatus(text, isError) {
+      statusMsg.hidden = false;
+      statusMsg.textContent = text;
+      statusMsg.classList.toggle('error', isError);
+    }
+
+    function renderQuota() {
+      if (limit > 0) {
+        quotaBar.hidden = false;
+        quotaText.textContent = used + ' / ' + limit + ' слов';
+        quotaFill.style.width = Math.min(100, Math.round((used / limit) * 100)) + '%';
+        quotaFill.classList.toggle('full', used >= limit);
+        sendBtn.disabled = used >= limit;
+        wordInput.disabled = used >= limit;
+        if (used >= limit) showStatus('Лимит исчерпан. Спасибо за участие!', false);
+      } else {
+        quotaBar.hidden = true;
+        sendBtn.disabled = false;
+        wordInput.disabled = false;
+      }
+    }
+
+    sendBtn.addEventListener('click', send);
+    wordInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+    codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') wordInput.focus(); });
+    codeInput.addEventListener('change', () => { const c = codeInput.value.trim(); if (/^\d{6}$/.test(c)) setCode(c); });
+
+    socket.on('errorMessage', ({ message }) => showStatus(message, true));
+
+    socket.on('wordAccepted', ({ word, used: u, limit: l }) => {
+      used = u; limit = l; renderQuota(); wordInput.value = '';
+      if (used < limit || limit === 0) { wordInput.focus(); showStatus('Слово «' + word + '» принято.', false); }
+    });
+
+    // Получаем тему, логотип и квоту при входе в комнату
+    socket.on('quotaUpdate', ({ code, used: u, limit: l, theme, logo }) => {
+      if (currentCode && code !== currentCode) return;
+      currentCode = code; used = u; limit = l;
+      if (theme) applyTheme(theme);
+      if (logo) guestLogo.src = logo; // Применяем логотип
+      renderQuota();
+    });
+  </script>
+</body>
+</html>

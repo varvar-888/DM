@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Облако слов</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+</head>
+<body class="state-waiting">
+
+  <!-- БЛОК КНОПОК В ЛЕВОМ ВЕРХНЕМ УГЛУ -->
+  <div id="themeContainer" style="position: fixed; top: 20px; left: 20px; z-index: 1000; display: flex; gap: 10px; align-items: flex-start;">
+    
+    <!-- 1. Кнопка темы -->
+    <div class="theme-selector">
+      <button id="themeBtn" class="theme-btn" type="button">🎨 Тема</button>
+      <div id="themeMenu" class="theme-menu" hidden>
+        <button class="theme-option" data-theme="default"><span class="theme-color-dot" style="background: #0F4D3A;"></span> Малахитовая</button>
+        <button class="theme-option" data-theme="theme-red"><span class="theme-color-dot" style="background: #E62D0F;"></span> Красная</button>
+        <button class="theme-option" data-theme="theme-blue"><span class="theme-color-dot" style="background: #3B8DC5;"></span> Синяя</button>
+        <button class="theme-option" data-theme="theme-gray"><span class="theme-color-dot" style="background: #D9D9D9;"></span> Серая</button>
+      </div>
+    </div>
+
+    <!-- 2. Кнопка логотипа -->
+    <div>
+      <input type="file" id="logoInput" accept="image/*" hidden />
+      <button id="logoBtn" class="theme-btn" type="button" style="background: rgba(0, 0, 0, 0.25); color: var(--accent-teal); border-color: var(--accent-teal);">
+        🖼️ Логотип
+      </button>
+    </div>
+  </div>
+
+  <!-- ЭКРАН НАСТРОЙКИ -->
+  <section id="setupScreen" class="setup-screen">
+    <div class="setup-card">
+      <!-- ID логотипа изменён на mainLogo, чтобы скрипт мог его найти -->
+      <img id="mainLogo" src="/logo.png" alt="Малахитовое детство" class="setup-logo" />
+      
+      <h1 class="setup-title">Облако слов</h1>
+      <p class="setup-subtitle">Задайте вопрос — гости ответят одним словом</p>
+      <label class="label" for="questionInput">Вопрос аудитории</label>
+      <input id="questionInput" class="input" type="text" placeholder="Например: Каким должно быть детство?" maxlength="200" />
+      <button id="createBtn" class="btn" type="button">Создать облако</button>
+      <p class="setup-hint">После создания откроется сцена и пульт управления</p>
+    </div>
+  </section>
+
+  <!-- ЭКРАН КОМНАТЫ (СЦЕНА) -->
+  <section id="roomScreen" class="room-screen" hidden>
+    <header class="room-header">
+      <div class="header-left">
+        <h2 id="questionBanner" class="question-text">—</h2>
+        <p class="header-hint">Наведи на QR-код и отправь сообщение</p>
+        <p class="stats-line">
+          <span id="statWords">0</span> слов · <span id="statPeople">0</span> участников
+        </p>
+      </div>
+      <div class="header-right">
+        <div class="join-label">КОД КОМНАТЫ</div>
+        <div id="codeValue" class="code-value">------</div>
+      </div>
+    </header>
+
+    <main class="cloud-area">
+      <div class="cloud-wrap">
+        <div id="cloud" class="cloud">
+          <div id="cloudInner" class="cloud-inner">
+            <div class="cloud-empty">Ждём слова от гостей…</div>
+          </div>
+        </div>
+      </div>
+      <aside class="side-qr">
+        <div class="side-qr-title">ПРИСОЕДИНЯЙТЕСЬ</div>
+        <div id="qrcode" class="qr-box"></div>
+        <a id="joinLink" class="join-link" href="#" target="_blank" rel="noopener">—</a>
+        <button id="copyBtn" class="btn btn-copy" type="button">Скопировать ссылку</button>
+      </aside>
+    </main>
+    <div id="pausedBadge" class="paused-badge" hidden>⏸ Приём слов приостановлен</div>
+  </section>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const themeContainer = document.getElementById('themeContainer');
+    const setupScreen = document.getElementById('setupScreen');
+    const roomScreen = document.getElementById('roomScreen');
+    const questionInput = document.getElementById('questionInput');
+    const createBtn = document.getElementById('createBtn');
+    const questionBanner = document.getElementById('questionBanner');
+    const codeValue = document.getElementById('codeValue');
+    const qrcodeEl = document.getElementById('qrcode');
+    const cloudEl = document.getElementById('cloud');
+    const cloudInner = document.getElementById('cloudInner');
+    const statWords = document.getElementById('statWords');
+    const statPeople = document.getElementById('statPeople');
+    const joinLink = document.getElementById('joinLink');
+    const copyBtn = document.getElementById('copyBtn');
+    const pausedBadge = document.getElementById('pausedBadge');
+    
+    // Переменные для логотипа
+    const logoInput = document.getElementById('logoInput');
+    const logoBtn = document.getElementById('logoBtn');
+    const mainLogo = document.getElementById('mainLogo');
+
+    let currentCode = null;
+    let currentWords = [];
+    let isLocked = false;
+    let hasFirstWord = false;
+    let selectedTheme = 'default';
+    let customLogoBase64 = null; // Тут храним загруженную картинку
+
+    // === ТЕМА ===
+    const themeBtn = document.getElementById('themeBtn');
+    const themeMenu = document.getElementById('themeMenu');
+    const themeOptions = document.querySelectorAll('.theme-option');
+
+    function applyTheme(themeName) {
+      document.body.classList.remove('theme-red', 'theme-blue', 'theme-gray');
+      if (themeName && themeName !== 'default') document.body.classList.add(themeName);
+    }
+
+    themeBtn.addEventListener('click', (e) => { e.stopPropagation(); themeMenu.hidden = !themeMenu.hidden; });
+    document.addEventListener('click', () => { themeMenu.hidden = true; });
+
+    themeOptions.forEach(btn => {
+      btn.addEventListener('click', () => {
+        selectedTheme = btn.dataset.theme;
+        applyTheme(selectedTheme);
+        localStorage.setItem('malachite-theme', selectedTheme);
+        themeMenu.hidden = true;
+      });
+    });
+
+    // === ЛОГОТИП ===
+    logoBtn.addEventListener('click', () => logoInput.click());
+
+    logoInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        customLogoBase64 = event.target.result;
+        mainLogo.src = customLogoBase64; // Меняем локально
+        
+        // Если облако уже создано, отправляем на сервер
+        if (currentCode) {
+          socket.emit('hostChangeLogo', { code: currentCode, logo: customLogoBase64 });
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // === КОПИРОВАНИЕ ===
+    function copyToClipboard(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+      return new Promise((resolve, reject) => {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select();
+          const ok = document.execCommand('copy'); document.body.removeChild(ta);
+          ok ? resolve() : reject();
+        } catch (err) { reject(err); }
+      });
+    }
+
+    copyBtn.addEventListener('click', () => {
+      if (!joinLink.href || joinLink.href === '#') return;
+      copyToClipboard(joinLink.href).then(() => {
+        const old = copyBtn.textContent;
+        copyBtn.textContent = '✓ Скопировано!'; copyBtn.classList.add('copied');
+        setTimeout(() => { copyBtn.textContent = old; copyBtn.classList.remove('copied'); }, 2000);
+      }).catch(() => alert('Не удалось скопировать'));
+    });
+
+    // === СЦЕНА ===
+    createBtn.addEventListener('click', () => {
+      const q = questionInput.value.trim();
+      if (!q) { questionInput.focus(); return; }
+      socket.emit('createCloud', q);
+    });
+    questionInput.addEventListener('keydown', e => { if (e.key === 'Enter') createBtn.click(); });
+
+    socket.on('cloudCreated', ({ code, question, theme, logo }) => {
+      currentCode = code; currentWords = []; hasFirstWord = false; isLocked = false;
+      
+      // Отправляем тему, если она отличается от дефолтной
+      if (theme !== selectedTheme && currentCode) {
+        socket.emit('hostChangeTheme', { code: currentCode, theme: selectedTheme });
+      }
+      applyTheme(selectedTheme);
+
+      // Отправляем логотип, если его загрузили ДО создания облака
+      if (customLogoBase64) {
+        socket.emit('hostChangeLogo', { code: currentCode, logo: customLogoBase64 });
+      }
+
+      document.body.classList.add('state-waiting'); document.body.classList.remove('state-cloud');
+      
+      // Прячем экран настройки и кнопки
+      setupScreen.hidden = true; 
+      themeContainer.hidden = true; 
+      roomScreen.hidden = false;
+      
+      questionBanner.textContent = question; codeValue.textContent = code;
+      
+      const guestUrl = window.location.origin + '/guest?code=' + code;
+      joinLink.textContent = guestUrl; joinLink.href = guestUrl;
+      qrcodeEl.innerHTML = '';
+      new QRCode(qrcodeEl, { text: guestUrl, width: 220, height: 220, colorDark: '#0F4D3A', colorLight: '#FFFFFF', correctLevel: QRCode.CorrectLevel.H });
+      
+      renderCloud([], 0, 0, false);
+      window.open('/control.html?code=' + code, 'malachite-control', 'popup=yes,width=520,height=900');
+    });
+
+    socket.on('cloudUpdate', ({ code, words, participants, totalWords, locked }) => {
+      if (!currentCode || code !== currentCode) return;
+      currentWords = words || []; isLocked = !!locked; pausedBadge.hidden = !isLocked;
+      renderCloud(currentWords, participants || 0, totalWords || 0, isLocked);
+      
+      const nowHasWord = currentWords.length > 0;
+      if (nowHasWord && !hasFirstWord) { hasFirstWord = true; document.body.classList.remove('state-waiting'); document.body.classList.add('state-cloud'); }
+      if (!nowHasWord && hasFirstWord) { hasFirstWord = false; document.body.classList.remove('state-cloud'); document.body.classList.add('state-waiting'); }
+    });
+
+    const COLORS = ['#FFFFFF', '#F2B705', '#E8A55A', '#FF6B3E'];
+
+    function renderCloud(words, participants, totalWords, locked) {
+      statWords.textContent = totalWords; statPeople.textContent = participants;
+      if (!words || words.length === 0) {
+        cloudInner.innerHTML = '<div class="cloud-empty">Ждём слова от гостей…</div>';
+        cloudInner.style.transform = 'scale(1)'; return;
+      }
+      const maxCount = Math.max(...words.map(w => w.count));
+      const shuffled = words.slice().sort(() => Math.random() - 0.5);
+      cloudInner.innerHTML = '';
+      
+      shuffled.forEach((item, i) => {
+        const span = document.createElement('span');
+        span.className = 'word'; span.textContent = item.word;
+        let size = maxCount === 1 ? 56 : 36 + Math.pow((item.count - 1) / (maxCount - 1), 0.75) * 64;
+        span.style.fontSize = size + 'px';
+        span.style.color = COLORS[i % COLORS.length];
+        span.style.opacity = locked ? '0.5' : '1';
+        cloudInner.appendChild(span);
+      });
+
+      requestAnimationFrame(() => {
+        const wrap = cloudEl.parentElement;
+        const innerWidth = cloudInner.offsetWidth;
+        const innerHeight = cloudInner.offsetHeight;
+        const availableWidth = wrap.offsetWidth - 20;
+        const availableHeight = wrap.offsetHeight - 20;
+        let scale = 1;
+        if (innerWidth > availableWidth || innerHeight > availableHeight) {
+          scale = Math.min(availableWidth / innerWidth, availableHeight / innerHeight);
+        }
+        cloudInner.style.transform = `scale(${Math.max(0.3, scale)})`;
+      });
+    }
+  </script>
+</body>
+</html>
